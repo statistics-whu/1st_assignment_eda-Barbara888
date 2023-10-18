@@ -1,0 +1,236 @@
+---
+title: "链家二手房数据统计分析报告"
+author:
+  - 田赐惠
+documentclass: ctexart
+
+output:
+  rticles::ctex:
+    fig_caption: yes
+    number_sections: yes
+    toc: yes
+---
+
+
+```{r setup, include = FALSE,echo = FALSE}
+knitr::opts_chunk$set(echo = FALSE,error = FALSE, warning = FALSE, message = FALSE,
+                      out.width = "100%", split = FALSE, fig.align = "center")
+#load library
+library(tidyverse)
+library(kableExtra)
+library(lubridate)
+library(scales)
+library(plotly)
+library(patchwork)
+library(ggrepel)
+library(showtext)
+showtext_auto(enable = TRUE)
+```
+
+ 
+
+# 数据介绍
+
+本报告**链家**数据获取方式如下：
+    
+报告人在2023年9月12日获取了[链家武汉二手房网站](https://wh.lianjia.com/ershoufang/)数据。
+    
+- 链家二手房网站默认显示100页，每页30套房产，因此本数据包括3000套房产信息；
+    
+- 数据包括了页面可见部分的文本信息，具体字段及说明见作业说明。
+
+ **说明：**数据仅用于教学；由于不清楚链家数据的展示规则，因此数据可能并不是武汉二手房市场的随机抽样，结论很可能有很大的偏差，甚至可能是错误的。
+    
+```{r}
+# 载入数据和预处理
+
+lj<- read_csv("E:/BA-MEM/1st-assignment/data/2023-09-12_cleaned.csv")
+# EDA ---------------------------------------------------------------------
+
+## 如下语句可以解决画图中的中文显示问题，当然你可以用showtext包来解决
+
+#这里family设置成你系统中的中文字体名。
+
+#清除杂质转换为逻辑型
+lj$near_subway <- ifelse(is.na(lj$near_subway), FALSE,ifelse(lj$near_subway == "近地铁",TRUE,FALSE))
+lj$if_2y <- ifelse(is.na(lj$if_2y), FALSE,TRUE)
+lj$has_key <- ifelse(is.na(lj$has_key), FALSE,ifelse(lj$has_key == "随时看房",TRUE,FALSE))
+lj$vr <- ifelse(is.na(lj$vr), FALSE,ifelse(lj$vr == "VR看装修",TRUE,FALSE))
+#清除错误数据
+lj$property_style <- ifelse(lj$property_style== "暂无数据", NA,lj$property_style)
+lj$property_height <- factor(lj$property_height, levels = c("低", "中", "高"))
+lj$decoration <- factor(lj$decoration, levels = c("精装", "简装", "毛坯","其他"))
+
+# 做一些数据预处理，比如把字符型变成factor。
+lj <- data.frame(lapply(lj, function(x) if(is.character(x)) as.factor(x) else x))
+
+
+
+```
+
+# 数据概览
+
+数据表（lj)共包括`r names(lj)`等`r ncol(lj)`个变量,共`r nrow(lj)`行。表的前10行示例如下：
+
+```{r}
+lj %>% 
+  head(10) %>%
+  kable(caption = "武汉链家二手房") %>% 
+  kable_styling()
+```
+
+各变量的简短信息：
+```{r}
+glimpse(lj)
+```
+
+各变量的简短统计：
+```{r}
+summary(lj)
+```
+
+可以看到：
+
+- 直观结论1
+从数量上来看，白沙洲、盘龙城、四新等三环以及三环外区域的二手房套数最多
+
+- 直观结论2
+每平米价格极差非常大，超过40000元，但平均数与中位数都在15000元附近，且集中在10799元至18211元范围内。这个价位是最为普遍的。
+
+- 精装修房屋占大多数
+-地铁覆盖了超过一半的二手房
+
+# 探索性分析
+
+## 变量1的数值描述与图形
+房屋单价整体呈现右偏的形态，一半房屋单价在14404元以下，一半房屋单价处于14404元至44656元区间
+```{r}
+ggplot(data = lj, aes(x = price_sqm)) +
+  geom_histogram(binwidth = 1000) 
+```
+
+房产数量最多的5个区域与总体房价的比较，除了光谷东房价高于均值外，其他热门区域房价均低于全市均价，特别是盘龙城和金银湖，均价低于11000元。
+```{r}
+price_distribution <- lj %>%  
+  group_by(property_region, price_sqm) %>%  
+  summarise(count = n())  %>%
+  filter(property_region %in% c("白沙洲","盘龙城","四新","光谷东","金银湖"))
+# 使用group_by()和summarise()函数计算每个行政区域的房产数量和总体均价
+district_summary <- lj %>% group_by(property_region) %>% summarise(房产数量 = n(), 每平米价格均价 = mean(price_sqm))
+top_districts <- district_summary %>% arrange(desc(房产数量)) %>% 
+  head(5)%>%
+  mutate( 总体均价 = mean(lj$price_sqm))
+
+ggplot(top_districts, aes(x = property_region)) +
+  geom_col(aes(y = 每平米价格均价), fill = "blue", alpha = 0.5, position = "dodge") +
+  geom_col(aes(y = 总体均价), fill = "green", alpha = 0.5, position = "dodge") +
+  scale_y_continuous(name = "房屋单价", sec.axis = sec_axis(~ ., name = "房屋单价")) +
+  ggtitle("房产数量最多的5个区域单价比较")
+```
+根据区域单价分布，发现光谷东与白沙洲房价分布非常分散，价格高低相差很大。而盘龙城和四新价格则较为集中。
+```{r}
+
+# 从小提琴图可以看出各个区域的价格分布情况  
+ggplot(data = price_distribution, aes(x = price_sqm, y = reorder(property_region, count), fill = property_region)) +  
+  geom_violin(trim = FALSE) +  
+  geom_boxplot(width=0.1, fill="white") +  
+  theme_minimal() +  
+  geom_point(data = top_districts, aes(x = 每平米价格均价, y = property_region), size = 2,alpha=1/2) +  
+  labs(title = "前五大区域房屋单价分布", x = "每平方米价格", y = "区域") +  
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+统计关注人数排名前500的房屋，光谷东的二手房受到最多的关注，这可能也是该区域房价较高的原因之一。
+
+```{r}
+followers_500<- lj %>%
+    filter(rank(-followers)<500) %>%
+    group_by(property_region) %>% 
+    summarise(count = n()) %>%
+    top_n(5)
+followers_500
+```
+尝试研究关注人数是否与临近地铁、产证满2年、随时看房、VR看房这几个要素有关。
+发现很难找到明显的影响。
+```{r}
+lj %>%
+  filter(rank(-followers)<200) %>%
+  ggplot(aes(x = has_key, y = followers)) +  
+  geom_boxplot() +
+  labs(x="中介是否有钥匙（随时看房）",y="关注人数")
+```
+
+
+```{r}
+lj %>%
+  filter(rank(-followers)<200) %>%
+  ggplot(aes(x = vr, y = followers)) +  
+  geom_boxplot() +
+  labs(x="是否支持VR看房",y="关注人数")
+```
+
+
+```{r}
+lj %>%
+  filter(rank(-followers)<200) %>%
+  ggplot(aes(x = if_2y, y = followers)) +  
+  geom_boxplot() +
+  labs(x="产证是否满2年",y="关注人数")
+```
+
+
+```{r}
+lj %>%
+  filter(rank(-followers)<200) %>%
+  ggplot(aes(x = near_subway, y = followers)) +  
+  geom_boxplot() +
+  labs(x="是否靠近地铁",y="关注人数")
+```
+
+- 发现1
+
+- 发现2
+
+## 变量2的数值描述与图形
+通过直方图观察楼栋总层数的分布，发现很多住宅楼高度为32至34层，18层，11层，6至8层。
+```{r}
+lj %>%
+  filter(!is.na(property_style)) %>%
+  filter(!property_style == "平房") %>%
+  ggplot(aes(x=property_t_height,fill=property_style)) +
+  geom_histogram(binwidth = 1) +
+  labs(x = "楼栋总层数",y="数量",fill="建筑形式")
+```
+在板楼，塔楼，板塔结合三种建筑形式中，占比最高的是板楼。这里为了避免干扰，选取了总层数为4至34层的数据。
+```{r}
+lj %>%
+  filter(!is.na(property_style)) %>%
+  filter(!property_style == "平房") %>%
+  filter(property_t_height%in% 4:34) %>%
+  ggplot(aes(x = property_t_height, fill = property_style)) +
+  geom_bar(position = "fill")+
+  labs(x = "楼栋总层数",y="占比",fill="建筑形式")
+```
+观察建筑形式在不同层高的变化趋势，发现随着楼层增高，板楼这种形式的占比减小直至平稳，板塔结合占比增大。
+```{r}
+lj %>%
+  filter(!is.na(property_style)) %>%
+  filter(!property_style == "平房") %>%
+  filter(property_t_height %in% 4:34) %>%
+  ggplot(aes(x = property_t_height, group=property_style, fill = property_style)) +
+  geom_density(adjust=2, position="fill") +
+  labs(x = "楼栋总层数",y="密度",fill="建筑形式")
+```
+查看二手房的装修状况，分为精装，简装，毛坯，其他四类。精装房的平均单价明显高于另外三类，简装与毛坯均价差异不大。
+```{r}
+lj %>%
+  group_by(decoration) %>%
+  summarise(计数=n(),平均单价=mean(price_sqm))
+```
+分别画出价格分布图，观察到毛坯房较简装房，价格分布更加分散。
+
+```{r}
+lj %>%
+ggplot( aes(y=price_sqm)) +
+  geom_histogram() +
+  facet_grid(~ decoration)
+```
